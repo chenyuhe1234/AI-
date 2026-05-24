@@ -34,6 +34,10 @@ ollama run <模型名>
 ```java
 ollama rm <模型名>
 ```
+#### 3.5 查看本地正在运行的模型
+```java
+ollama ps
+```
 ---
 
 
