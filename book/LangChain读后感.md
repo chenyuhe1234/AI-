@@ -39,12 +39,31 @@
 
 #### 4.什么是LangChain
   大语言模型的编程框架 将大语言模型与其他工具 数据结合 同时弥补大语言模型的短板
+  LangChain中的Chain（链） 是一个核心概念，它的主要作用是将多个独立的组件（如提示模板、LLM模型、输出解析器、外部工具等）连接起来，形成一个可复用的工作流，以完成复杂的任务
 前提 
+链的主要作用
+- 模块化复杂流程：将一个复杂的AI应用流程分解为多个可管理的步骤，并通过链将其串联
+- 构建可复用工作流：创建标准化的处理流程，可以在不同场景下重复使用，提高开发效率
+- 连接多种组件：可以实现多种组合，例如
+  > 将 LLM 与提示模板结合
+  > 将 LLM 与输出解析器结合，以结构化方式输出结果
+  > 将 LLM 与外部数据源结合，用于问答系统
+  > 将多个LLM按顺序结合在一起，前一个LLM的输出作为后一个的输入
 需要安装对应的python包
 pip install openai langchain
+代码样例
+```python
+# 1. 使用管道符 | 将组件连接成链
+chain = prompt | model | output_parser
+
+# 2. 调用链
+result = chain.invoke({"input": "What's your name?"})
+
+```
 
 
-#### 6.LangChain中的 AIMessage | HumanMessage | SystemMessage 是什么
+
+#### 5.LangChain中的 AIMessage | HumanMessage | SystemMessage 是什么
 ![LangChain的消息结构](../img/LangChain的消息结构.png)
 > SystemMessage（系统消息）
 ```java
@@ -68,7 +87,7 @@ pip install openai langchain
 
 
 
-#### 5.通过LangChain框架 来问千问模型问题 样例代码
+#### 6.通过LangChain框架 来问千问模型问题 样例代码
 > 安装依赖与配置环境变量：
 ```bash
 python -m pip install langchain-openai
