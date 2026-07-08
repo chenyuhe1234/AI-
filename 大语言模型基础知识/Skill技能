@@ -83,6 +83,74 @@ Skill 的执行过程应该像任何后端服务一样是可观测的。在 Skil
 ```java
 把 Skill 当作一个“ 微服务 ”来设计。 它的 SKILL.md 就是 API 文档，scripts/ 目录就是业务逻辑实现，references/ 则是外部依赖文档。
 ```
+***
+#### 问题6:skill的使用技巧
+- 技巧一:使用精准触发词
+```java
+ 1.场景:生成架构图   模糊的说法-帮我画个图     精确触发-生成一张架构图 用深色科技分
+ 2.场景:写提交信息  模糊的说法-帮我提交代码    精确触发-根据git diff 生成commit message
+ 3.场景:做代码审查 模糊的说法-看看我的代码     精确触发-对这个PR做一次code review
+```
+***
+- 技巧二：直接引用 Skill 路径
+```java
+@.codebuddy/skills/commit-message 根据当前 git diff 生成提交信息
+绕过关键词匹配，直接指定 Skill------100% 命中率，这是最可靠的触发方式。
+```
+***
+- 技巧三:描述期望的输出格式
+```java
+帮我做一次 **code review**，重点关注安全漏洞和性能问题，输出 Markdown 报告
+明确输出格式帮助 AI 选对 Skill。
+上下文管理：让 Skill 读到该读的
+```
+***
+- 技巧四:引导 AI 按需加载 references
+```java
+Skill 的 references/ 不会一次全部加载。显式引导：
+请参考 references/cloud-icons-guide.md，为架构图每个节点添加专业图标
+```
+***
+- 技巧五:分步骤交互，不要一次性倾倒
+```java
+按 Skill 的 Workflow 步骤逐轮推进，而非一条消息交代所有需求：
+第一轮：明确需求
+"根据 git diff 生成 **commit message**，遵循 Conventional Commits 规范"
+第二轮：补充上下文
+"这次改动涉及用户认证模块的重构，scope 是 auth"
+第三轮：微调输出
+"body 部分再补充一下 Breaking Change 的影响说明"
+```
+***
+- 技巧六:用 @attach 提供项目上下文
+```java
+@src/api/routes.ts 参考这些路由定义，生成 API 文档
+质量控制：让输出达到专业级
+```
+***
+- 技巧七:利用内置质量检查清单
+```java
+完成初稿后显式要求自检：
+请对照 SKILL.md 中的质量检查清单，检查一遍输出是否合格
+```
+***
+- 技巧八:提供反面示例（Few-shot Negative）
+```java
+"不要什么"比"要什么"更有效：
+注意：不要使用白色背景，不要超过 15 个节点，不要用默认 Mermaid 主
+```
+***
+- 技巧九:迭代优化而非推倒重来
+```java
+❌ 架构图不好看，重新画
+✅ 架构图整体不错，Redis 节点边框改红色，数据流箭头加标签
+保留好的部分，只修改不满意的部分，效率提升 10 倍。
+定制进阶：让 Skill 更懂你
+```
+***
+
+
+
 
 
 
