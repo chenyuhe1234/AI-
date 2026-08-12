@@ -2,6 +2,16 @@
 > 数值型
 ```java
 // 包括整数（int）和浮点数（float）。整数没有小数部分，比如 1、100、-5；浮点数包含小数部分，比如 3.14、0.001。Python 3 中整数没有大小限制，只要内存足够大，你可以处理极大的数字。
+
+C:\Users\Cwx1505274>python
+Python 3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)] on win32
+Type "help", "copyright", "credits" or "license" for more information.
+>>> a=14
+>>> print(a)
+14
+>>> type(a)
+<class 'int'>
+>>>
 ```
 ***
 > 布尔类型
