@@ -670,6 +670,10 @@ Transformer 的核心组件是自注意力机制（Self-Attention）。与 RNN �
 
 
 
+##### 推理执行  + 自主反思
+
+
+
 
 
 
