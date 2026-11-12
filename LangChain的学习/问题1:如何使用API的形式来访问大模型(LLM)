@@ -1,3 +1,28 @@
 1.使用openai原生的api来访问大模型
 1.1 使用【硬编码】的方式
 特点: base_url | api_key都写死在代码中
+```java
+"""
+    硬编码的方式  写相关的配置
+    http://models.ascend.huawei.com/v1
+    sk-xkhTeVq1B86LmsYCISNUXgCu76yeGZsCvh6NS2pKuxKd6bsm
+"""
+import os
+from openai import OpenAI
+
+# 配置代理忽略（如未在系统环境变量设置）
+os.environ["NO_PROXY"] = ".huawei.com,.localhost"
+
+client = OpenAI(
+    base_url="http://models.ascend.huawei.com/v1",
+    api_key="sk-xkhTeVq1B86LmsYCISNUXgCu76yeGZsCvh6NS2pKuxKd6bsm"
+)
+
+response = client.chat.completions.create(
+    model="glm-5.3-flash",
+    messages=[{"role": "user", "content": "你好"}]
+)
+
+print(response.choices[0].message.content)
+```
+
