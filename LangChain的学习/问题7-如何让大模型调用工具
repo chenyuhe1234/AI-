@@ -1,1 +1,1126 @@
+大模型(LLM)调用工具 有哪些优势(LLM+工具调用=Agent)
+```java
+增强 LLM 的功能：让 LLM 突破纯文本生成的限制，执行实际操作（如调用搜索引擎、查询数据库、运行代码等）
+
+支持智能决策：在Agent 工作流中，LLM 根据用户输入动态选择最合适的 Tool 完成任务。
+
+模块化设计：每个 Tool 专注一个功能，便于复用和组合（例如：搜索工具 + 计算工具 + 天气查询工具）
+
+```
+
+工具(Tools)本质上就是对应一个【函数】
+
+工具(Tools)的核心要素
+```java
+name：工具的名称
+description：工具的功能描述
+该工具输入的 JSON 模式
+要调用的函数
+return_direct：是否应将工具结果直接返回给用户（仅对Agent相关）
+```
+
+自定义工具的2种方式
+方式1:使用@tool装饰器（自定义工具的最简单方式）
+```java
+装饰器默认使用函数名称作为工具名称，但你可以通过参数 name_or_callable 来覆盖此设置。同时，装饰器将使用函数的文档字符串作为工具的描述，因此函数必须提供文档字符串。
+```
+方式2:使用StructuredTool.from_function类方法
+```java
+这类似于 @tool 装饰器，但允许更多配置和同步/异步实现的规范
+要将工具定义从 @tool 装饰器方式优化为 StructuredTool.from_function() 方式，主要变化在于工具的定义部分。
+StructuredTool 提供了更细粒度的控制能力，允许显式指定名称、描述、参数模式（ArgsSchema）以及执行函数。
+```
+
+模型调用工具
+核心流程图
+```java
+sequenceDiagram
+    participant User as 用户 (陈煜合)
+    participant Func as chat_with_memory_and_tools
+    participant History as InMemoryChatMessageHistory
+    participant Model as ChatOpenAI (bind_tools)
+    participant Tool as add_numbers 工具
+
+    Note over User, Tool: 第一轮/非工具调用对话
+    User->>Func: 输入: "你好"
+    Func->>History: 添加 HumanMessage
+    Func->>Model: invoke(messages)
+    Model->>Func: 返回 AIMessage (无 tool_calls)
+    Func->>History: 添加 AIMessage
+    Func->>User: 返回文本回复
+
+    Note over User, Tool: 第二轮/工具调用对话
+    User->>Func: 输入: "15 + 25 = ?"
+    Func->>History: 添加 HumanMessage
+    Func->>Model: invoke(messages)
+    
+    alt 模型决定调用工具
+        Model->>Func: 返回 AIMessage (含 tool_calls)
+        
+        Func->>Func: 解析 tool_calls
+        Func->>Tool: 执行 add_numbers(15, 25)
+        Tool-->>Func: 返回结果: 40
+        
+        Func->>History: 添加 ToolMessage (content="40", tool_call_id=...)
+        
+        Func->>Model: invoke(messages) [再次调用，携带工具结果]
+        Model->>Func: 返回最终 AIMessage ("结果是40")
+        
+        Func->>History: 添加最终 AIMessage
+        Func->>User: 返回最终文本回复
+    else 模型决定不调用工具
+        Func->>History: 添加 AIMessage
+        Func->>User: 返回文本回复
+    end
+
+```
+
+代码
+这段代码的核心目标是：在一个具备“记忆功能”的对话系统中，集成一个简单的自定义工具（加法计算器），并让大模型能够识别并调用该工具。
+```java
+import os
+from dotenv import load_dotenv
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = "localhost"
+
+
+# 3. 定义工具
+@tool
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+
+# 4. 初始化模型（注意：不再传入 tools 参数）
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 5. 初始化消息历史存储
+message_history = InMemoryChatMessageHistory()
+
+# 6. 系统提示词
+sys_message = SystemMessage(content="你是一个专业的AI助手 你的名字叫 小白。你可以使用工具进行计算。")
+message_history.add_message(sys_message)
+
+
+def chat_with_memory_and_tools(user_input: str):
+    # 1. 添加用户消息到历史
+    human_message = HumanMessage(content=user_input)
+    message_history.add_message(human_message)
+
+    # 2. 获取所有历史消息
+    messages = message_history.messages
+
+    # 3. 【关键修改】使用 bind_tools 绑定工具并调用模型
+    # bind_tools 会正确生成 OpenAI 所需的 tools 格式
+    model_with_tools = chat_model.bind_tools([add_numbers])
+    response = model_with_tools.invoke(messages)
+
+    # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            if tool_name == 'add_numbers':
+                result = add_numbers.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 【关键修改】再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+    else:
+        # 没有工具调用，直接返回模型回答
+        message_history.add_message(response)
+        return response
+
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_memory_and_tools("你好，我想了解一下人工智能的最新发展。")
+    print(response1.content)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_memory_and_tools("你叫什么名字？")
+    print(response2.content)
+
+    print("\n=== 第三轮对话（触发工具） ===")
+    response3 = chat_with_memory_and_tools("请计算 15 加 25 等于多少？")
+    print(response3.content)
+
+```
+大模型(LLM)调用工具 有哪些优势(LLM+工具调用=Agent)
+增强 LLM 的功能：让 LLM 突破纯文本生成的限制，执行实际操作（如调用搜索引擎、查询数据库、运行代码等）
+
+支持智能决策：在Agent 工作流中，LLM 根据用户输入动态选择最合适的 Tool 完成任务。
+
+模块化设计：每个 Tool 专注一个功能，便于复用和组合（例如：搜索工具 + 计算工具 + 天气查询工具）
+
+
+工具(Tools)本质上就是对应一个【函数】
+工具(Tools)的核心要素
+name：工具的名称
+description：工具的功能描述
+该工具输入的 JSON 模式
+要调用的函数
+return_direct：是否应将工具结果直接返回给用户（仅对Agent相关）
+工具使用具体的实操步骤
+步骤1：将name、description 和 JSON模式作为上下文提供给LLM
+
+步骤2：LLM会根据提示词推断出需要调用哪些工具，并提供具体的调用参数信息
+
+步骤3：用户需要根据返回的工具调用信息，自行触发相关工具的回调
+自定义工具的2种方式
+方式1:使用@tool装饰器（自定义工具的最简单方式）
+装饰器默认使用函数名称作为工具名称，但你可以通过参数 name_or_callable 来覆盖此设置。同时，装饰器将使用函数的文档字符串作为工具的描述，因此函数必须提供文档字符串。
+方式2:使用StructuredTool.from_function类方法
+这类似于 @tool 装饰器，但允许更多配置和同步/异步实现的规范
+要将工具定义从 @tool 装饰器方式优化为 StructuredTool.from_function() 方式，主要变化在于工具的定义部分。
+StructuredTool 提供了更细粒度的控制能力，允许显式指定名称、描述、参数模式（ArgsSchema）以及执行函数。
+
+模型调用工具
+核心流程图
+sequenceDiagram
+    participant User as 用户 (陈煜合)
+    participant Func as chat_with_memory_and_tools
+    participant History as InMemoryChatMessageHistory
+    participant Model as ChatOpenAI (bind_tools)
+    participant Tool as add_numbers 工具
+
+    Note over User, Tool: 第一轮/非工具调用对话
+    User->>Func: 输入: "你好"
+    Func->>History: 添加 HumanMessage
+    Func->>Model: invoke(messages)
+    Model->>Func: 返回 AIMessage (无 tool_calls)
+    Func->>History: 添加 AIMessage
+    Func->>User: 返回文本回复
+
+    Note over User, Tool: 第二轮/工具调用对话
+    User->>Func: 输入: "15 + 25 = ?"
+    Func->>History: 添加 HumanMessage
+    Func->>Model: invoke(messages)
+    
+    alt 模型决定调用工具
+        Model->>Func: 返回 AIMessage (含 tool_calls)
+        
+        Func->>Func: 解析 tool_calls
+        Func->>Tool: 执行 add_numbers(15, 25)
+        Tool-->>Func: 返回结果: 40
+        
+        Func->>History: 添加 ToolMessage (content="40", tool_call_id=...)
+        
+        Func->>Model: invoke(messages) [再次调用，携带工具结果]
+        Model->>Func: 返回最终 AIMessage ("结果是40")
+        
+        Func->>History: 添加最终 AIMessage
+        Func->>User: 返回最终文本回复
+    else 模型决定不调用工具
+        Func->>History: 添加 AIMessage
+        Func->>User: 返回文本回复
+    end
+
+代码
+这段代码的核心目标是：在一个具备“记忆功能”的对话系统中，集成一个简单的自定义工具（加法计算器），并让大模型能够识别并调用该工具。
+import os
+from dotenv import load_dotenv
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = "localhost"
+
+
+# 3. 定义工具
+@tool
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+
+# 4. 初始化模型（注意：不再传入 tools 参数）
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 5. 初始化消息历史存储
+message_history = InMemoryChatMessageHistory()
+
+# 6. 系统提示词
+sys_message = SystemMessage(content="你是一个专业的AI助手 你的名字叫 小白。你可以使用工具进行计算。")
+message_history.add_message(sys_message)
+
+
+def chat_with_memory_and_tools(user_input: str):
+    # 1. 添加用户消息到历史
+    human_message = HumanMessage(content=user_input)
+    message_history.add_message(human_message)
+
+    # 2. 获取所有历史消息
+    messages = message_history.messages
+
+    # 3. 【关键修改】使用 bind_tools 绑定工具并调用模型
+    # bind_tools 会正确生成 OpenAI 所需的 tools 格式
+    model_with_tools = chat_model.bind_tools([add_numbers])
+    response = model_with_tools.invoke(messages)
+
+    # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            if tool_name == 'add_numbers':
+                result = add_numbers.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 【关键修改】再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+    else:
+        # 没有工具调用，直接返回模型回答
+        message_history.add_message(response)
+        return response
+
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_memory_and_tools("你好，我想了解一下人工智能的最新发展。")
+    print(response1.content)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_memory_and_tools("你叫什么名字？")
+    print(response2.content)
+
+    print("\n=== 第三轮对话（触发工具） ===")
+    response3 = chat_with_memory_and_tools("请计算 15 加 25 等于多少？")
+    print(response3.content)
+
+核心代码分析
+定义工具(定义函数)
+```java
+# 3. 定义工具
+@tool
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+```
+为模型绑定工具
+```java
+   # 3. 【关键修改】使用 bind_tools 绑定工具并调用模型
+    # bind_tools 会正确生成 OpenAI 所需的 tools 格式
+    model_with_tools = chat_model.bind_tools([add_numbers])
+    response = model_with_tools.invoke(messages)
+```
+由模型决定是否需要调用工具 需要响应报文中会有response.tool_calls
+用户输入处理：将用户的话变成 HumanMessage 存入历史。
+模型推理：chat_model.invoke(messages)。
+此时，模型会看历史消息。
+如果用户问“你好”，模型直接回复文本。
+如果用户问“15+25”，模型会生成一个特殊的响应，其中包含 tool_calls 字段，意思是：“我要调用 add_numbers 工具，参数是 a=15, b=25”。
+```java
+
+
+
+  # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            if tool_name == 'add_numbers':
+                result = add_numbers.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 【关键修改】再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+```
+使用StructuredTool.from_function()的方式进行工具的调用
+代码
+引入 Pydantic 模型 (AddNumbersInput)：
+StructuredTool 推荐使用 Pydantic 模型来定义输入参数。这不仅提供了类型检查，还能自动生成更详细的 JSON Schema，帮助 LLM 更准确地理解参数含义（通过 Field(description=...)）。
+使用 StructuredTool.from_function：
+显式指定 func（执行函数）、name（工具名）、description（工具描述）、args_schema（参数模型）。
+这种方式比 @tool 装饰器更灵活，特别是在需要复杂参数验证或自定义工具行为时。
+保持调用逻辑一致：
+在 chat_with_memory_and_tools 函数中，工具调用部分无需修改，因为 StructuredTool 实例同样支持 .invoke() 方法，且 bind_tools 能正确处理其生成的 Schema。
+代码结构更清晰：
+将参数定义、函数实现和工具注册分离，便于维护和扩展，符合企业级开发规范。
+```java
+ 3. 定义工具参数模型 (Pydantic Model)
+# 使用 Pydantic 模型来定义工具输入参数的结构和描述
+class AddNumbersInput(BaseModel):
+    a: int = Field(description="第一个整数")
+    b: int = Field(description="第二个整数")
+
+# 4. 定义工具执行函数
+def add_numbers_func(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+# 5. 使用 StructuredTool.from_function 创建工具实例
+# 相比 @tool 装饰器，这种方式可以更清晰地分离参数定义、描述和执行逻辑
+add_numbers = StructuredTool.from_function(
+    func=add_numbers_func,
+    name="add_numbers",
+    description="Add two numbers together.",
+    args_schema=AddNumbersInput,
+    return_direct=False  # 如果为 True，工具结果将直接返回给用户，不再经过 LLM 处理
+)
+```
+代码
+```java
+import os
+from dotenv import load_dotenv
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = "localhost"
+
+# 3. 定义工具参数模型 (Pydantic Model)
+# 使用 Pydantic 模型来定义工具输入参数的结构和描述
+class AddNumbersInput(BaseModel):
+    a: int = Field(description="第一个整数")
+    b: int = Field(description="第二个整数")
+
+# 4. 定义工具执行函数
+def add_numbers_func(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+# 5. 使用 StructuredTool.from_function 创建工具实例
+# 相比 @tool 装饰器，这种方式可以更清晰地分离参数定义、描述和执行逻辑
+add_numbers = StructuredTool.from_function(
+    func=add_numbers_func,
+    name="add_numbers",
+    description="Add two numbers together.",
+    args_schema=AddNumbersInput,
+    return_direct=False  # 如果为 True，工具结果将直接返回给用户，不再经过 LLM 处理
+)
+
+# 6. 初始化模型
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 7. 初始化消息历史存储
+message_history = InMemoryChatMessageHistory()
+
+# 8. 系统提示词
+sys_message = SystemMessage(content="你是一个专业的AI助手 你的名字叫 小白。你可以使用工具进行计算。")
+message_history.add_message(sys_message)
+
+def chat_with_memory_and_tools(user_input: str):
+    # 1. 添加用户消息到历史
+    human_message = HumanMessage(content=user_input)
+    message_history.add_message(human_message)
+
+    # 2. 获取所有历史消息
+    messages = message_history.messages
+
+    # 3. 使用 bind_tools 绑定工具并调用模型
+    # 传入之前定义的 add_numbers 工具实例
+    model_with_tools = chat_model.bind_tools([add_numbers])
+    response = model_with_tools.invoke(messages)
+
+    # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            # 注意：这里我们直接调用 add_numbers.invoke()，因为它是 StructuredTool 实例
+            if tool_name == 'add_numbers':
+                # StructuredTool 的 invoke 方法接受一个字典作为参数
+                result = add_numbers.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+    else:
+        # 没有工具调用，直接返回模型回答
+        message_history.add_message(response)
+        return response
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_memory_and_tools("你好，我想了解一下人工智能的最新发展。")
+    print(response1.content)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_memory_and_tools("你叫什么名字？")
+    print(response2.content)
+
+    print("\n=== 第三轮对话（触发工具） ===")
+    response3 = chat_with_memory_and_tools("请计算 15 加 25 等于多少？")
+    print(response3.content)
+
+```
+大模型(LLM)调用工具 有哪些优势(LLM+工具调用=Agent)
+增强 LLM 的功能：让 LLM 突破纯文本生成的限制，执行实际操作（如调用搜索引擎、查询数据库、运行代码等）
+
+支持智能决策：在Agent 工作流中，LLM 根据用户输入动态选择最合适的 Tool 完成任务。
+
+模块化设计：每个 Tool 专注一个功能，便于复用和组合（例如：搜索工具 + 计算工具 + 天气查询工具）
+
+
+工具(Tools)本质上就是对应一个【函数】
+工具(Tools)的核心要素
+name：工具的名称
+description：工具的功能描述
+该工具输入的 JSON 模式
+要调用的函数
+return_direct：是否应将工具结果直接返回给用户（仅对Agent相关）
+工具使用具体的实操步骤
+步骤1：将name、description 和 JSON模式作为上下文提供给LLM
+
+步骤2：LLM会根据提示词推断出需要调用哪些工具，并提供具体的调用参数信息
+
+步骤3：用户需要根据返回的工具调用信息，自行触发相关工具的回调
+自定义工具的2种方式
+方式1:使用@tool装饰器（自定义工具的最简单方式）
+装饰器默认使用函数名称作为工具名称，但你可以通过参数 name_or_callable 来覆盖此设置。同时，装饰器将使用函数的文档字符串作为工具的描述，因此函数必须提供文档字符串。
+方式2:使用StructuredTool.from_function类方法
+这类似于 @tool 装饰器，但允许更多配置和同步/异步实现的规范
+要将工具定义从 @tool 装饰器方式优化为 StructuredTool.from_function() 方式，主要变化在于工具的定义部分。
+StructuredTool 提供了更细粒度的控制能力，允许显式指定名称、描述、参数模式（ArgsSchema）以及执行函数。
+
+模型调用工具
+核心流程图
+sequenceDiagram
+    participant User as 用户 (陈煜合)
+    participant Func as chat_with_memory_and_tools
+    participant History as InMemoryChatMessageHistory
+    participant Model as ChatOpenAI (bind_tools)
+    participant Tool as add_numbers 工具
+
+    Note over User, Tool: 第一轮/非工具调用对话
+    User->>Func: 输入: "你好"
+    Func->>History: 添加 HumanMessage
+    Func->>Model: invoke(messages)
+    Model->>Func: 返回 AIMessage (无 tool_calls)
+    Func->>History: 添加 AIMessage
+    Func->>User: 返回文本回复
+
+    Note over User, Tool: 第二轮/工具调用对话
+    User->>Func: 输入: "15 + 25 = ?"
+    Func->>History: 添加 HumanMessage
+    Func->>Model: invoke(messages)
+    
+    alt 模型决定调用工具
+        Model->>Func: 返回 AIMessage (含 tool_calls)
+        
+        Func->>Func: 解析 tool_calls
+        Func->>Tool: 执行 add_numbers(15, 25)
+        Tool-->>Func: 返回结果: 40
+        
+        Func->>History: 添加 ToolMessage (content="40", tool_call_id=...)
+        
+        Func->>Model: invoke(messages) [再次调用，携带工具结果]
+        Model->>Func: 返回最终 AIMessage ("结果是40")
+        
+        Func->>History: 添加最终 AIMessage
+        Func->>User: 返回最终文本回复
+    else 模型决定不调用工具
+        Func->>History: 添加 AIMessage
+        Func->>User: 返回文本回复
+    end
+
+代码
+这段代码的核心目标是：在一个具备“记忆功能”的对话系统中，集成一个简单的自定义工具（加法计算器），并让大模型能够识别并调用该工具。
+import os
+from dotenv import load_dotenv
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = "localhost"
+
+
+# 3. 定义工具
+@tool
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+
+# 4. 初始化模型（注意：不再传入 tools 参数）
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 5. 初始化消息历史存储
+message_history = InMemoryChatMessageHistory()
+
+# 6. 系统提示词
+sys_message = SystemMessage(content="你是一个专业的AI助手 你的名字叫 小白。你可以使用工具进行计算。")
+message_history.add_message(sys_message)
+
+
+def chat_with_memory_and_tools(user_input: str):
+    # 1. 添加用户消息到历史
+    human_message = HumanMessage(content=user_input)
+    message_history.add_message(human_message)
+
+    # 2. 获取所有历史消息
+    messages = message_history.messages
+
+    # 3. 【关键修改】使用 bind_tools 绑定工具并调用模型
+    # bind_tools 会正确生成 OpenAI 所需的 tools 格式
+    model_with_tools = chat_model.bind_tools([add_numbers])
+    response = model_with_tools.invoke(messages)
+
+    # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            if tool_name == 'add_numbers':
+                result = add_numbers.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 【关键修改】再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+    else:
+        # 没有工具调用，直接返回模型回答
+        message_history.add_message(response)
+        return response
+
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_memory_and_tools("你好，我想了解一下人工智能的最新发展。")
+    print(response1.content)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_memory_and_tools("你叫什么名字？")
+    print(response2.content)
+
+    print("\n=== 第三轮对话（触发工具） ===")
+    response3 = chat_with_memory_and_tools("请计算 15 加 25 等于多少？")
+    print(response3.content)
+
+核心代码分析
+定义工具(定义函数)
+# 3. 定义工具
+@tool
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+为模型绑定工具
+   # 3. 【关键修改】使用 bind_tools 绑定工具并调用模型
+    # bind_tools 会正确生成 OpenAI 所需的 tools 格式
+    model_with_tools = chat_model.bind_tools([add_numbers])
+    response = model_with_tools.invoke(messages)
+由模型决定是否需要调用工具 需要响应报文中会有response.tool_calls
+用户输入处理：将用户的话变成 HumanMessage 存入历史。
+模型推理：chat_model.invoke(messages)。
+此时，模型会看历史消息。
+如果用户问“你好”，模型直接回复文本。
+如果用户问“15+25”，模型会生成一个特殊的响应，其中包含 tool_calls 字段，意思是：“我要调用 add_numbers 工具，参数是 a=15, b=25”。
+
+
+
+  # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            if tool_name == 'add_numbers':
+                result = add_numbers.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 【关键修改】再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+
+使用StructuredTool.from_function()的方式进行工具的调用
+代码
+引入 Pydantic 模型 (AddNumbersInput)：
+StructuredTool 推荐使用 Pydantic 模型来定义输入参数。这不仅提供了类型检查，还能自动生成更详细的 JSON Schema，帮助 LLM 更准确地理解参数含义（通过 Field(description=...)）。
+使用 StructuredTool.from_function：
+显式指定 func（执行函数）、name（工具名）、description（工具描述）、args_schema（参数模型）。
+这种方式比 @tool 装饰器更灵活，特别是在需要复杂参数验证或自定义工具行为时。
+保持调用逻辑一致：
+在 chat_with_memory_and_tools 函数中，工具调用部分无需修改，因为 StructuredTool 实例同样支持 .invoke() 方法，且 bind_tools 能正确处理其生成的 Schema。
+代码结构更清晰：
+将参数定义、函数实现和工具注册分离，便于维护和扩展，符合企业级开发规范。
+ 3. 定义工具参数模型 (Pydantic Model)
+# 使用 Pydantic 模型来定义工具输入参数的结构和描述
+class AddNumbersInput(BaseModel):
+    a: int = Field(description="第一个整数")
+    b: int = Field(description="第二个整数")
+
+# 4. 定义工具执行函数
+def add_numbers_func(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+# 5. 使用 StructuredTool.from_function 创建工具实例
+# 相比 @tool 装饰器，这种方式可以更清晰地分离参数定义、描述和执行逻辑
+add_numbers = StructuredTool.from_function(
+    func=add_numbers_func,
+    name="add_numbers",
+    description="Add two numbers together.",
+    args_schema=AddNumbersInput,
+    return_direct=False  # 如果为 True，工具结果将直接返回给用户，不再经过 LLM 处理
+)
+代码
+import os
+from dotenv import load_dotenv
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = "localhost"
+
+# 3. 定义工具参数模型 (Pydantic Model)
+# 使用 Pydantic 模型来定义工具输入参数的结构和描述
+class AddNumbersInput(BaseModel):
+    a: int = Field(description="第一个整数")
+    b: int = Field(description="第二个整数")
+
+# 4. 定义工具执行函数
+def add_numbers_func(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+# 5. 使用 StructuredTool.from_function 创建工具实例
+# 相比 @tool 装饰器，这种方式可以更清晰地分离参数定义、描述和执行逻辑
+add_numbers = StructuredTool.from_function(
+    func=add_numbers_func,
+    name="add_numbers",
+    description="Add two numbers together.",
+    args_schema=AddNumbersInput,
+    return_direct=False  # 如果为 True，工具结果将直接返回给用户，不再经过 LLM 处理
+)
+
+# 6. 初始化模型
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 7. 初始化消息历史存储
+message_history = InMemoryChatMessageHistory()
+
+# 8. 系统提示词
+sys_message = SystemMessage(content="你是一个专业的AI助手 你的名字叫 小白。你可以使用工具进行计算。")
+message_history.add_message(sys_message)
+
+def chat_with_memory_and_tools(user_input: str):
+    # 1. 添加用户消息到历史
+    human_message = HumanMessage(content=user_input)
+    message_history.add_message(human_message)
+
+    # 2. 获取所有历史消息
+    messages = message_history.messages
+
+    # 3. 使用 bind_tools 绑定工具并调用模型
+    # 传入之前定义的 add_numbers 工具实例
+    model_with_tools = chat_model.bind_tools([add_numbers])
+    response = model_with_tools.invoke(messages)
+
+    # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            # 注意：这里我们直接调用 add_numbers.invoke()，因为它是 StructuredTool 实例
+            if tool_name == 'add_numbers':
+                # StructuredTool 的 invoke 方法接受一个字典作为参数
+                result = add_numbers.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+    else:
+        # 没有工具调用，直接返回模型回答
+        message_history.add_message(response)
+        return response
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_memory_and_tools("你好，我想了解一下人工智能的最新发展。")
+    print(response1.content)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_memory_and_tools("你叫什么名字？")
+    print(response2.content)
+
+    print("\n=== 第三轮对话（触发工具） ===")
+    response3 = chat_with_memory_and_tools("请计算 15 加 25 等于多少？")
+    print(response3.content)
+
+模型调用 天气查询
+替换工具定义：将 add_numbers 替换为 get_weather，使用 StructuredTool.from_function 定义。
+增加天气参数模型：定义 WeatherInput 包含城市名。
+模拟天气查询逻辑：由于没有真实 API，这里使用模拟数据返回武汉天气（实际开发中请替换为 HTTP 请求）。
+更新系统提示词：告知模型具备查询天气的能力。
+更新测试用例：针对“武汉今天天气”进行测试。
+优点
+```java
+
+参数模型 (WeatherInput)：
+
+定义了 city 字段，并添加了清晰的 description。这有助于 LLM 准确提取用户意图中的城市实体（如从“武汉今天天气”中提取“武汉”）。
+
+工具函数 (get_weather_func)：
+
+接收 city 字符串。
+
+返回字符串格式的天气信息。
+
+注意：代码中使用了 mock_weather_data 字典进行模拟。在实际华为内部场景中，建议替换为调用内部气象服务 API 或外部天气 API（需处理鉴权和异常捕获）。
+
+工具绑定 (bind_tools)：
+
+将 [get_weather_tool] 传入 bind_tools，确保模型知道可以使用此工具。
+
+闭环处理：
+
+保持原有的 ToolMessage 回传机制，确保 LLM 能拿到工具返回的天气字符串，并生成自然语言回复（例如：“武汉今天天气多云，气温22°C...”）。
+
+系统提示词：
+
+更新为“你可以使用工具查询天气...”，增强模型调用工具的倾向性。
+```
+代码
+```java
+import os
+from dotenv import load_dotenv
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+import json
+
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = "localhost"
+
+# 3. 定义天气工具参数模型 (Pydantic Model)
+class WeatherInput(BaseModel):
+    city: str = Field(description="需要查询天气的城市名称，例如：武汉、北京")
+
+# 4. 定义工具执行函数
+def get_weather_func(city: str) -> str:
+    """
+    查询指定城市的当前天气情况。
+    注意：此处为模拟逻辑，实际生产中应替换为调用天气API (如 OpenWeatherMap, 和风天气等)
+    """
+    # 模拟天气数据
+    mock_weather_data = {
+        "武汉": {"temperature": "22°C", "condition": "多云", "humidity": "60%"},
+        "北京": {"temperature": "15°C", "condition": "晴", "humidity": "40%"},
+        "上海": {"temperature": "25°C", "condition": "小雨", "humidity": "80%"}
+    }
+    
+    # 默认返回
+    if city in mock_weather_data:
+        data = mock_weather_data[city]
+        result = f"{city}今天天气：{data['condition']}，气温：{data['temperature']}，湿度：{data['humidity']}"
+    else:
+        result = f"抱歉，暂未获取到 {city} 的天气信息。"
+        
+    return result
+
+# 5. 使用 StructuredTool.from_function 创建天气工具实例
+get_weather_tool = StructuredTool.from_function(
+    func=get_weather_func,
+    name="get_weather",
+    description="查询指定城市的实时天气信息，包括温度、天气状况和湿度。",
+    args_schema=WeatherInput,
+    return_direct=False
+)
+
+# 6. 初始化模型
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 7. 初始化消息历史存储
+message_history = InMemoryChatMessageHistory()
+
+# 8. 系统提示词 (更新为包含天气能力)
+sys_message = SystemMessage(content="你是一个专业的AI助手，名字叫小白。你可以使用工具查询天气和进行计算。")
+message_history.add_message(sys_message)
+
+def chat_with_memory_and_tools(user_input: str):
+    # 1. 添加用户消息到历史
+    human_message = HumanMessage(content=user_input)
+    message_history.add_message(human_message)
+
+    # 2. 获取所有历史消息
+    messages = message_history.messages
+
+    # 3. 使用 bind_tools 绑定工具并调用模型
+    # 传入之前定义的 get_weather_tool 工具实例
+    model_with_tools = chat_model.bind_tools([get_weather_tool])
+    response = model_with_tools.invoke(messages)
+
+    # 4. 检查是否需要调用工具
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"--- 检测到工具调用: {response.tool_calls} ---")
+
+        # 执行工具
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool_id = tool_call['id']
+
+            # 执行对应的工具函数
+            if tool_name == 'get_weather':
+                # StructuredTool 的 invoke 方法接受一个字典作为参数
+                result = get_weather_tool.invoke(tool_args)
+                print(f"--- 工具执行结果: {result} ---")
+
+                # 将工具结果封装为 ToolMessage 并加入历史
+                tool_message = ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_id
+                )
+                message_history.add_message(tool_message)
+
+                # 再次调用模型，让它基于工具结果生成最终回答
+                messages = message_history.messages
+                final_response = model_with_tools.invoke(messages)
+
+                # 将最终回答加入历史
+                message_history.add_message(final_response)
+                print(f"最终响应: {final_response}")
+                return final_response
+            else:
+                print(f"未知工具: {tool_name}")
+                return response
+    else:
+        # 没有工具调用，直接返回模型回答
+        message_history.add_message(response)
+        return response
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_memory_and_tools("你好，我想了解一下人工智能的最新发展。")
+    print(response1.content)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_memory_and_tools("你叫什么名字？")
+    print(response2.content)
+
+    print("\n=== 第三轮对话（触发天气工具） ===")
+    # 用户询问武汉天气
+    response3 = chat_with_memory_and_tools("武汉今天天气怎么样？")
+    print(response3.content)
+
+```
+
+
+
+
+  
+
 
