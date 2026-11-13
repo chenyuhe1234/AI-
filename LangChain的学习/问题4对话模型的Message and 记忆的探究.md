@@ -134,7 +134,7 @@ from langchain_openai import ChatOpenAI
 load_dotenv()
 
 # 配置代理忽略（如未在系统环境变量设置）
-os.environ["NO_PROXY"] = ".huawei.com,.localhost"
+os.environ["NO_PROXY"] = ".localhost.com,.localhost"
 # 调用对话模型
 chat_model = ChatOpenAI(
     model_name=os.getenv("MODEL_NAME"),  # 从 .env 获取模型名称
@@ -250,7 +250,7 @@ from langchain_openai import ChatOpenAI
 load_dotenv()
 
 # 配置代理忽略
-os.environ["NO_PROXY"] = ".huawei.com,.localhost"
+os.environ["NO_PROXY"] = ".localhost.com,.localhost"
 
 # 初始化模型
 chat_model = ChatOpenAI(
