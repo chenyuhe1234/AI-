@@ -1,1 +1,471 @@
+1.LangChain Agents模块的核心组件
+工具 Tool
+```java
+LangChain 提供了广泛的入门工具，但也支持自定义工具，包括自定义工具描述。
+在框架内，每个功能或函数被封装成一个工具（Tools），具有自己的输入、输出及处理方法。
+具体使用步骤：
+① Agent 接收任务后，通过大模型推理选择适合的工具处理任务。
+② 一旦选定，LangChain 将任务输入传递给该工具，工具处理输入生成输出。
+③ 输出经过大模型推理，可用于其他工具的输入或作为最终结果返回给用户。
+```
+工具集 Toolkits
+```java
+在构建 Agent 时，通常提供给 LLM 的工具不仅仅有一两个，而是一组可供选择的工具集（Tool 列表），这样可以让 LLM 在完成任务时有更多的选择。
+```
+智能体/代理 Agent
+```java
+智能体/代理（agent）可以协助我们做出决策，调用相应的 API。底层的实现方式是通过 LLM 来决定下一步执行什么动作。
+```
+代理执行器 AgentExecutor
+```java
+AgentExecutor 本质上是代理的运行时，负责协调智能体的决策和实际的工具执行。
+```
+Agent 作为“大脑”进行推理和决策，从 Toolkits 中选择合适的 Tool 进行调用，而 AgentExecutor 作为“手脚”负责实际执行这些工具并管理整个运行流程，最终将结果反馈给用户。
+
+2.Agent的2种核心模式(Agent的类型)
+Function Call 模式
+```java
+决策机制：基于结构化函数调用。LLM 直接输出符合特定 Schema 的结构化数据（如 JSON），明确指定要调用的函数名及参数。
+
+输出格式：JSON 或结构化对象。
+
+特点：
+
+延迟低：无需经过复杂的自然语言推理步骤，直接映射到工具调用。
+
+效率高：适合工具调用逻辑清晰、参数明确的场景。
+
+依赖性强：需要 LLM 原生支持函数调用（Function Calling）能力。
+
+适用场景：高效、确定的工具调用任务，如数据库查询、API 触发等。
+```
+
+ReAct 模式 (Reason + Act)
+```java
+决策机制：基于自然语言推理。LLM 通过“思考（Thought）- 行动（Action）- 观察（Observation）”的循环，逐步拆解任务、调用工具并分析结果。
+
+输出格式：自然语言文本。包含推理过程和具体的动作指令。
+
+特点：
+
+延迟高：每一步都需要生成文本并进行多轮交互，耗时较长。
+
+可解释性强：完整展示决策逻辑和推理链条，便于调试和理解。
+
+通用性强：不依赖模型特定的函数调用接口，通用 LLM 即可实现。
+
+适用场景：复杂、多步骤的任务，需要模型展示决策过程或处理不确定性较高的场景。
+```
+Function Call 模式 与 ReAct 模式 (Reason + Act) 的比对
+
+3.使用agent_executor重构-Function Call 模式
+```java
+无需关心内部是否调用了工具、调用了几次工具，由 Executor 自动闭环
+以下是使用 LangChain 的 AgentExecutor 优化后的代码。该实现将原本手动的工具调用逻辑封装为标准的 Agent 循环，利用 create_tool_calling_agent 构建智能体，并通过 AgentExecutor 自动处理工具调用、结果反馈及最终响应生成。
+引入 create_tool_calling_agent：自动构建支持 Function Calling 的 Agent 逻辑，无需手动编写提示词模板。
+使用 AgentExecutor：替代手动的 if-else 工具调用循环。它负责协调 LLM、工具执行和结果反馈，支持多步推理和错误处理。
+简化调用逻辑：chat_with_agent 函数只需调用 agent_executor.invoke，无需关心内部是否调用了工具、调用了几次工具，由 Executor 自动闭环。
+上下文管理：通过 chat_history 参数将历史消息传递给 Agent，保持对话连贯性。
+配置增强：添加了 verbose=True 以便调试观察推理过程，以及 max_iterations 防止死循环。
+```
+```java
+import os
+from dotenv import load_dotenv
+from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+# 使用 Function Call 模式  使用agent_executor 无需关心内部是否调用了工具、调用了几次工具，由 Executor 自动闭环
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = ".huawei.com,.localhost"
+
+
+# 3. 定义工具参数模型 (Pydantic Model)
+class AddNumbersInput(BaseModel):
+    a: int = Field(description="第一个整数")
+    b: int = Field(description="第二个整数")
+
+
+# 4. 定义工具执行函数
+def add_numbers_func(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+
+# 5. 创建工具实例
+add_numbers = StructuredTool.from_function(
+    func=add_numbers_func,
+    name="add_numbers",
+    description="Add two numbers together.",
+    args_schema=AddNumbersInput,
+    return_direct=False
+)
+
+# 6. 初始化模型
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 7. 定义 Prompt 模板 (修复 TypeError的关键)
+# 必须包含 {input} 用户输入, {agent_scratchpad} 工具调用历史, 以及可选的 {chat_history}
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "你是一个专业的AI助手，你的名字叫小白。你可以使用工具进行计算。"),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
+
+# 8. 定义工具列表
+tools = [add_numbers]
+
+# 9. 创建 Agent (传入 prompt)
+agent = create_tool_calling_agent(chat_model, tools, prompt)
+
+# 10. 创建 AgentExecutor
+agent_executor = AgentExecutor(
+    agent=agent,
+    tools=tools,
+    verbose=True,
+    handle_parsing_errors=True,
+    max_iterations=5
+)
+
+# 用于维护对话历史的列表
+chat_history = []
+
+
+def chat_with_agent(user_input: str):
+    global chat_history
+
+    # 1. 调用 AgentExecutor
+    # AgentExecutor 会自动处理工具调用和最终回答
+    response = agent_executor.invoke({
+        "input": user_input,
+        "chat_history": chat_history
+    })
+
+    final_answer = response['output']
+
+    # 2. 更新历史：添加用户问题和 AI 回答
+    # 注意：AgentExecutor 内部可能已经处理了部分中间步骤，这里我们只追加最终的交互对
+    chat_history.append(HumanMessage(content=user_input))
+    chat_history.append(AIMessage(content=final_answer))
+
+    return final_answer
+
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_agent("你好，我想了解一下人工智能的最新发展。")
+    print(response1)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_agent("你叫什么名字？")
+    print(response2)
+
+    print("\n=== 第三轮对话（触发工具） ===")
+    response3 = chat_with_agent("请计算 15 加 25 等于多少？")
+    print(response3)
+
+```
+1.LangChain Agents模块的核心组件
+工具 Tool
+LangChain 提供了广泛的入门工具，但也支持自定义工具，包括自定义工具描述。
+在框架内，每个功能或函数被封装成一个工具（Tools），具有自己的输入、输出及处理方法。
+具体使用步骤：
+① Agent 接收任务后，通过大模型推理选择适合的工具处理任务。
+② 一旦选定，LangChain 将任务输入传递给该工具，工具处理输入生成输出。
+③ 输出经过大模型推理，可用于其他工具的输入或作为最终结果返回给用户。
+工具集 Toolkits
+在构建 Agent 时，通常提供给 LLM 的工具不仅仅有一两个，而是一组可供选择的工具集（Tool 列表），这样可以让 LLM 在完成任务时有更多的选择。
+智能体/代理 Agent
+智能体/代理（agent）可以协助我们做出决策，调用相应的 API。底层的实现方式是通过 LLM 来决定下一步执行什么动作。
+代理执行器 AgentExecutor
+AgentExecutor 本质上是代理的运行时，负责协调智能体的决策和实际的工具执行。
+Agent 作为“大脑”进行推理和决策，从 Toolkits 中选择合适的 Tool 进行调用，而 AgentExecutor 作为“手脚”负责实际执行这些工具并管理整个运行流程，最终将结果反馈给用户。
+
+2.Agent的2种核心模式(Agent的类型)
+Function Call 模式
+决策机制：基于结构化函数调用。LLM 直接输出符合特定 Schema 的结构化数据（如 JSON），明确指定要调用的函数名及参数。
+
+输出格式：JSON 或结构化对象。
+
+特点：
+
+延迟低：无需经过复杂的自然语言推理步骤，直接映射到工具调用。
+
+效率高：适合工具调用逻辑清晰、参数明确的场景。
+
+依赖性强：需要 LLM 原生支持函数调用（Function Calling）能力。
+
+适用场景：高效、确定的工具调用任务，如数据库查询、API 触发等。
+ReAct 模式 (Reason + Act)
+决策机制：基于自然语言推理。LLM 通过“思考（Thought）- 行动（Action）- 观察（Observation）”的循环，逐步拆解任务、调用工具并分析结果。
+
+输出格式：自然语言文本。包含推理过程和具体的动作指令。
+
+特点：
+
+延迟高：每一步都需要生成文本并进行多轮交互，耗时较长。
+
+可解释性强：完整展示决策逻辑和推理链条，便于调试和理解。
+
+通用性强：不依赖模型特定的函数调用接口，通用 LLM 即可实现。
+
+适用场景：复杂、多步骤的任务，需要模型展示决策过程或处理不确定性较高的场景。
+对比
+
+
+3.使用agent_executor重构-Function Call 模式
+无需关心内部是否调用了工具、调用了几次工具，由 Executor 自动闭环
+以下是使用 LangChain 的 AgentExecutor 优化后的代码。该实现将原本手动的工具调用逻辑封装为标准的 Agent 循环，利用 create_tool_calling_agent 构建智能体，并通过 AgentExecutor 自动处理工具调用、结果反馈及最终响应生成。
+引入 create_tool_calling_agent：自动构建支持 Function Calling 的 Agent 逻辑，无需手动编写提示词模板。
+使用 AgentExecutor：替代手动的 if-else 工具调用循环。它负责协调 LLM、工具执行和结果反馈，支持多步推理和错误处理。
+简化调用逻辑：chat_with_agent 函数只需调用 agent_executor.invoke，无需关心内部是否调用了工具、调用了几次工具，由 Executor 自动闭环。
+上下文管理：通过 chat_history 参数将历史消息传递给 Agent，保持对话连贯性。
+配置增强：添加了 verbose=True 以便调试观察推理过程，以及 max_iterations 防止死循环。
+import os
+from dotenv import load_dotenv
+from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+# 使用 Function Call 模式  使用agent_executor 无需关心内部是否调用了工具、调用了几次工具，由 Executor 自动闭环
+# 1. 加载 .env 文件中的环境变量
+load_dotenv()
+
+# 2. 配置代理忽略
+os.environ["NO_PROXY"] = ".huawei.com,.localhost"
+
+
+# 3. 定义工具参数模型 (Pydantic Model)
+class AddNumbersInput(BaseModel):
+    a: int = Field(description="第一个整数")
+    b: int = Field(description="第二个整数")
+
+
+# 4. 定义工具执行函数
+def add_numbers_func(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+
+# 5. 创建工具实例
+add_numbers = StructuredTool.from_function(
+    func=add_numbers_func,
+    name="add_numbers",
+    description="Add two numbers together.",
+    args_schema=AddNumbersInput,
+    return_direct=False
+)
+
+# 6. 初始化模型
+chat_model = ChatOpenAI(
+    model_name=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("BASE_URL"),
+    api_key=os.getenv("API_KEY"),
+    request_timeout=60.0
+)
+
+# 7. 定义 Prompt 模板 (修复 TypeError的关键)
+# 必须包含 {input} 用户输入, {agent_scratchpad} 工具调用历史, 以及可选的 {chat_history}
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "你是一个专业的AI助手，你的名字叫小白。你可以使用工具进行计算。"),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
+
+# 8. 定义工具列表
+tools = [add_numbers]
+
+# 9. 创建 Agent (传入 prompt)
+agent = create_tool_calling_agent(chat_model, tools, prompt)
+
+# 10. 创建 AgentExecutor
+agent_executor = AgentExecutor(
+    agent=agent,
+    tools=tools,
+    verbose=True,
+    handle_parsing_errors=True,
+    max_iterations=5
+)
+
+# 用于维护对话历史的列表
+chat_history = []
+
+
+def chat_with_agent(user_input: str):
+    global chat_history
+
+    # 1. 调用 AgentExecutor
+    # AgentExecutor 会自动处理工具调用和最终回答
+    response = agent_executor.invoke({
+        "input": user_input,
+        "chat_history": chat_history
+    })
+
+    final_answer = response['output']
+
+    # 2. 更新历史：添加用户问题和 AI 回答
+    # 注意：AgentExecutor 内部可能已经处理了部分中间步骤，这里我们只追加最终的交互对
+    chat_history.append(HumanMessage(content=user_input))
+    chat_history.append(AIMessage(content=final_answer))
+
+    return final_answer
+
+
+# 示例对话
+if __name__ == "__main__":
+    print("=== 第一轮对话 ===")
+    response1 = chat_with_agent("你好，我想了解一下人工智能的最新发展。")
+    print(response1)
+
+    print("\n=== 第二轮对话 ===")
+    response2 = chat_with_agent("你叫什么名字？")
+    print(response2)
+
+    print("\n=== 第三轮对话（触发工具） ===")
+    response3 = chat_with_agent("请计算 15 加 25 等于多少？")
+    print(response3)
+
+输出结果
+```java
+C:\Users\Cwx1505274\PycharmProjects\Model\.venv\Scripts\python.exe C:\Users\Cwx1505274\PycharmProjects\Model\langchain\agent\AgentFunctionCall.py 
+=== 第一轮对话 ===
+
+
+> Entering new AgentExecutor chain...
+
+
+你好！很高兴和你交流～我是小白。
+
+关于人工智能的最新发展，我可以从几个主要方向和你聊聊：
+
+## 📈 大语言模型（LLM）
+- **多模态能力**：模型不仅能处理文字，还能理解图像、音频、视频，比如同时看视频并回答关于它的问题
+- **推理能力增强**：通过"思维链"等技术，模型在数学、逻辑推理上的表现大幅提升
+- **更长上下文**：可以处理几十万甚至上百万字的文档
+
+## 🤖 具身智能
+- AI 不再只存在于屏幕里，而是走进机器人身体中
+- 大模型驱动的机器人可以完成更复杂的日常任务
+
+## 🔬 科学发现
+- AI 开始协助解决蛋白质结构预测、新药研发、材料科学等前沿科学问题
+
+## ⚖️ 安全与治理
+- 各国陆续出台 AI 监管框架（如欧盟 AI 法案）
+- 可解释性、对齐（alignment）成为研究热点
+
+---
+
+你对哪个方向最感兴趣呢？我可以展开讲讲 😊
+
+另外，如果你有具体的计算需求，也可以随时找我，我可以帮你算数哦！
+
+> Finished chain.
+
+
+你好！很高兴和你交流～我是小白。
+
+关于人工智能的最新发展，我可以从几个主要方向和你聊聊：
+
+## 📈 大语言模型（LLM）
+- **多模态能力**：模型不仅能处理文字，还能理解图像、音频、视频，比如同时看视频并回答关于它的问题
+- **推理能力增强**：通过"思维链"等技术，模型在数学、逻辑推理上的表现大幅提升
+- **更长上下文**：可以处理几十万甚至上百万字的文档
+
+## 🤖 具身智能
+- AI 不再只存在于屏幕里，而是走进机器人身体中
+- 大模型驱动的机器人可以完成更复杂的日常任务
+
+## 🔬 科学发现
+- AI 开始协助解决蛋白质结构预测、新药研发、材料科学等前沿科学问题
+
+## ⚖️ 安全与治理
+- 各国陆续出台 AI 监管框架（如欧盟 AI 法案）
+- 可解释性、对齐（alignment）成为研究热点
+
+---
+
+你对哪个方向最感兴趣呢？我可以展开讲讲 😊
+
+另外，如果你有具体的计算需求，也可以随时找我，我可以帮你算数哦！
+
+=== 第二轮对话 ===
+
+
+> Entering new AgentExecutor chain...
+
+
+你好呀！我的名字叫**小白**，很高兴认识你～
+
+如果你有任何问题，无论是想了解人工智能、闲聊聊天，还是需要帮我算算数，都可以随时找我哦！😊
+
+> Finished chain.
+
+
+你好呀！我的名字叫**小白**，很高兴认识你～
+
+如果你有任何问题，无论是想了解人工智能、闲聊聊天，还是需要帮我算算数，都可以随时找我哦！😊
+
+=== 第三轮对话（触发工具） ===
+
+
+> Entering new AgentExecutor chain...
+
+Invoking: `add_numbers` with `{'a': 15, 'b': 25}`
+
+
+40
+
+15 加 25 等于 **40** ✅
+
+如果还有其他计算任务，随时告诉我哦！
+
+> Finished chain.
+
+
+15 加 25 等于 **40** ✅
+
+如果还有其他计算任务，随时告诉我哦！
+
+Process finished with exit code 0
+
+```
+4.使用agent_executor重构-ReAct 模式（Reasoning + Acting）
+若需切换为 ReAct 模式（Reasoning + Acting），需使用 create_react_agent，并调整 Prompt 模板以包含 ReAct 特有的 Thought、Action、Action Input、Observation 循环逻辑。
+将 create_tool_calling_agent 替换为 create_react_agent。
+create_react_agent 需要显式传入 prompt，因为 ReAct 依赖特定的文本格式（Thought/Action/Observation）。
+Prompt 模板调整：
+Function Call 模式使用 ChatPromptTemplate 和 MessagesPlaceholder。
+ReAct 模式使用 PromptTemplate，并需包含 {tools}、{tool_names}、{input} 和 {agent_scratchpad}。
+引入了 FORMAT_INSTRUCTIONS 以确保模型输出符合 ReAct 的标准格式。
+模型参数建议：
+建议将 temperature 设置为 0 或较低值，因为 ReAct 模式对输出格式的稳定性要求较高，过高的创造性可能导致解析错误。
+上下文管理注意：
+标准的 create_react_agent 默认 Prompt 不包含 chat_history 变量。若需支持多轮对话，需在 PromptTemplate 中显式添加 {chat_history} 占位符，并在 invoke 时传入历史消息列表。上述代码为简化起见，展示了核心 ReAct 逻辑，实际生产中建议自定义 Prompt 以支持历史上下文。
+
+
+
+
+
+
+
+
+
 
