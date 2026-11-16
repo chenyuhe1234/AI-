@@ -1,0 +1,47 @@
+是什么
+```java
+Text Embedding Models：文档嵌入模型，提供将文本编码为向量的能力，即文档向量化。文档写入和用户查询匹配前都会先执行文档嵌入编码，即向量化。
+```
+代码
+```java
+from langchain_community.document_loaders import TextLoader
+from langchain_text_splitters import CharacterTextSplitter, RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+
+# 1. 加载文档
+file_path = "../load/test.txt"
+text_loader = TextLoader(file_path=file_path, encoding="utf-8")
+docs = text_loader.load()
+
+# 2. 文本切分
+# 为了强制切分成3块，这里使用 RecursiveCharacterTextSplitter 并设置较大的 chunk_size
+# 注意：实际生产中通常根据语义自动切分，此处为满足“切分成3块”的需求进行演示
+# 如果文档较短，可能需要调整 separators 或 chunk_size 以控制块数量
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=20,  # 根据实际文档长度调整，确保能大致分为3块
+    chunk_overlap=3,
+    separators=["\n\n", "\n", " ", ""]
+)
+split_docs = text_splitter.split_documents(docs)
+
+# 如果必须严格限制为3块，可以手动截取（仅用于演示特定需求）
+if len(split_docs) > 3:
+    split_docs = split_docs[:3]
+elif len(split_docs) < 3:
+    # 如果切分后不足3块，可根据需要合并或保留原样，此处保留原样
+    pass
+
+# 3. 初始化嵌入模型
+# 请确保已配置 OPENAI_API_KEY 环境变量
+embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+
+# 4. 构建并存储到向量数据库
+vector_db = FAISS.from_documents(split_docs, embeddings)
+
+# 5. 持久化存储（可选）
+vector_db.save_local("faiss_index_3_chunks")
+
+print(f"文档已切分为 {len(split_docs)} 块并存储到向量数据库。")
+
+```
